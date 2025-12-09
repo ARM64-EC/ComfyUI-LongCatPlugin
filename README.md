@@ -38,12 +38,34 @@ ComfyUI nodes wrapping LongCat image generation and editing pipelines (diffusers
 - Tests: `pytest tests/test_nodes.py`
 - Key modules: `nodes.py`, `longcat_image/pipelines/*`, `longcat_image/models/longcat_image_dit.py`.
 
-## To-Do
+## Status
+
+### Implemented (in this repo)
+- ComfyUI integration: several nodes and pipelines are implemented and available under `longcat`.
+- Nodes & pipelines: `LongCatCheckpointLoader`, `TextEncodeLongCatImage`, `TextEncodeLongCatImageEdit`, `VAEEncodeLongCat`, `VAEDecodeLongCat`, `LongCatSampler`, `LongCatImageSizeScale`.
+- Basic inference scripts: `scripts/inference_t2i.py`, `scripts/inference_edit.py`.
+- Core model implementation: `longcat_image/models/longcat_image_dit.py` and pipeline code in `longcat_image/pipelines/`.
+- Utilities: `longcat_image/utils/*` and helpers for distributed/accelerate usage.
+- Tests: basic pytest in `tests/test_nodes.py`.
+- Training examples present: `train_examples/` contains example scripts and configs for LoRA, SFT, DPO, and edit training.
+
+### In-repo examples (training)
+- `train_examples/lora/`: LoRA example training script and configs.
+- `train_examples/sft/`: Supervised Fine-Tuning example script and configs.
+- `train_examples/dpo/`: Direct Preference Optimization example script and configs.
+- `train_examples/edit/`: Edit-specific training examples.
+
+### Planned / To-Do
 - [ ] Add robust fallback when prompt rewriting model lacks `generate`.
 - [ ] Guard `LongCatImageEditPipeline` for `image=None` misuse.
-- [ ] Expand docs with example ComfyUI workflows and screenshots.
-- [ ] Provide sample model download script and config guidance.
-- [ ] Add more automated tests (pipeline smoke tests, dtype/device matrix).
+- [ ] Expand docs with example ComfyUI workflows, screenshots, and training tutorials (LoRA, SFT, DPO).
+- [ ] Provide a model download script and configuration guidance (including example HF hub integration).
+- [ ] Add comprehensive automated tests (pipeline smoke tests, dtype/device matrix, sample inputs).
+- [ ] Add example training recipes that are ready-to-run for LoRA/SFT/DPO and thorough documentation on the training steps.
+- [ ] Add Git LFS support for model weights and add guidance for releasing model checkpoints.
+- [ ] Add continuous integration (CI) to run tests and checks via GitHub Actions.
+- [ ] Add pre-commit hooks and consistent formatting (Black / isort / flake8).
+- [ ] Improve release and packaging automation (setup.py / wheel, CI release process).
 
 ## Credits
 - LongCat base model & pipelines: original LongCat project (LongCat team).

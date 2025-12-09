@@ -36,12 +36,34 @@
 - 测试：`pytest tests/test_nodes.py`
 - 关键模块：`nodes.py`、`longcat_image/pipelines/*`、`longcat_image/models/longcat_image_dit.py`。
 
-## 待办
+## 状态
+
+### 已实现（仓库中）
+- ComfyUI 集成：实现了若干节点和管线，命名空间 `longcat` 中可用。
+- 节点与管线：`LongCatCheckpointLoader`、`TextEncodeLongCatImage`、`TextEncodeLongCatImageEdit`、`VAEEncodeLongCat`、`VAEDecodeLongCat`、`LongCatSampler`、`LongCatImageSizeScale`。
+- 基础推理脚本：`scripts/inference_t2i.py`、`scripts/inference_edit.py`。
+- 模型实现：`longcat_image/models/longcat_image_dit.py` 与 `longcat_image/pipelines/` 下的管线代码。
+- 工具类：`longcat_image/utils/*`，以及用于 accelerate 的分布式/加速辅助函数。
+- 测试：基本单元测试位于 `tests/test_nodes.py`。
+- 训练示例：`train_examples/` 提供 LoRA、SFT、DPO、编辑相关训练的示例脚本与配置。
+
+### 仓库中的训练示例
+- `train_examples/lora/`：LoRA 示例训练脚本及配置。
+- `train_examples/sft/`：SFT（监督微调）示例脚本与配置。
+- `train_examples/dpo/`：DPO（偏好优化）示例脚本与配置。
+- `train_examples/edit/`：针对编辑任务的训练示例。
+
+### 规划 / 待办
 - [ ] 当提示词改写模型缺少 `generate` 时增加可靠回退。
 - [ ] 为 `LongCatImageEditPipeline` 增加 `image=None` 误用保护。
-- [ ] 扩展文档，提供 ComfyUI 流程示例与截图。
-- [ ] 提供模型下载脚本与配置指引。
-- [ ] 增加更多自动化测试（管线冒烟、dtype/device 组合）。
+- [ ] 扩展文档，提供完整的 ComfyUI 流程示例、截图与训练教程（LoRA、SFT、DPO）。
+- [ ] 提供模型下载脚本和配置指南（包括 Hugging Face Hub 的示例）。
+- [ ] 增加全面的自动化测试（管线冒烟测试、dtype/device 组合、示例输入）。
+- [ ] 提供可运行的 LoRA / SFT / DPO 训练配方，并补充详细的训练步骤文档。
+- [ ] 为模型权重等大文件启用 Git LFS 并说明如何发布权重。
+- [ ] 添加 CI（GitHub Actions）用于运行测试与检查。
+- [ ] 添加 pre-commit 钩子和统一格式化（Black / isort / flake8）。
+- [ ] 提升发布与打包自动化（wheel / setup.py，CI 自动发布）。
 
 ## 致谢
 - LongCat 基础模型与管线：原 LongCat 项目（LongCat 团队）。
