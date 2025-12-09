@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import torch
 import numpy as np
 from PIL import Image
@@ -9,6 +10,7 @@ import math
 from transformers import AutoTokenizer, AutoModel, AutoProcessor, CLIPImageProcessor, CLIPVisionModelWithProjection
 from diffusers.models import AutoencoderKL
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
+from safetensors.torch import load_file as load_safetensors
 
 import folder_paths
 import comfy.model_management
@@ -63,6 +65,11 @@ DTYPE_MAP = {
     "float32": torch.float32,
 }
 
+RESOURCE_DIR = os.path.join(current_dir, "longcat_image", "resources")
+BUNDLED_TOKENIZER_DIR = os.path.join(RESOURCE_DIR, "tokenizer")
+BUNDLED_TEXT_ENCODER_CONFIG = os.path.join(RESOURCE_DIR, "text_encoder", "config.json")
+BUNDLED_VAE_CONFIG = os.path.join(RESOURCE_DIR, "vae", "config.json")
+
 
 def _resolve_device(device_str: str):
     if not device_str or device_str == "auto":
@@ -104,6 +111,34 @@ def list_available_devices():
         if dev not in deduped:
             deduped.append(dev)
     return deduped
+
+
+def _load_config_from_metadata(safetensors_path: str) -> Optional[Dict[str, Any]]:
+    try:
+        from safetensors import safe_open
+
+        with safe_open(safetensors_path, framework="pt", device="cpu") as f:
+            meta = f.metadata() or {}
+        for key in ["config", "model_config", "config_json"]:
+            if key in meta:
+                try:
+                    return json.loads(meta[key])
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return None
+
+
+def _load_bundled_config(rel_path: str) -> Optional[Dict[str, Any]]:
+    path = os.path.join(RESOURCE_DIR, rel_path)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
 
 
 class LongCatCLIPWrapper:
@@ -374,33 +409,52 @@ class LongCatCLIPLoader:
     CATEGORY = "LongCat"
 
     def load_clip(self, model_name: str, dtype: str, device: str):
-        model_path = folder_paths.get_full_path("text_encoder", model_name)
+        model_path = folder_paths.get_full_path("text_encoders", model_name)
+        base_dir = model_path if os.path.isdir(model_path) else os.path.dirname(model_path)
 
         torch_dtype = DTYPE_MAP.get(dtype, torch.bfloat16)
         target_device = _resolve_device(device)
 
+        tokenizer_dir = BUNDLED_TOKENIZER_DIR
+
         tokenizer = AutoTokenizer.from_pretrained(
-            model_path, subfolder="tokenizer", trust_remote_code=True
+            tokenizer_dir, trust_remote_code=True
         )
         text_processor = AutoProcessor.from_pretrained(
-            model_path, subfolder="tokenizer", trust_remote_code=True
+            tokenizer_dir, trust_remote_code=True
         )
-        text_encoder = AutoModel.from_pretrained(
-            model_path, subfolder="text_encoder", torch_dtype=torch_dtype, trust_remote_code=True
-        ).to(target_device)
 
         image_encoder = None
         feature_extractor = None
-        try:
-            image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-                model_path, subfolder="image_encoder", torch_dtype=torch_dtype, trust_remote_code=True
+
+        if os.path.isdir(model_path):
+            text_encoder = AutoModel.from_pretrained(
+                model_path, subfolder="text_encoder", torch_dtype=torch_dtype, trust_remote_code=True
             ).to(target_device)
-            feature_extractor = CLIPImageProcessor.from_pretrained(
-                model_path, subfolder="feature_extractor", trust_remote_code=True
-            )
-        except Exception:
-            image_encoder = None
-            feature_extractor = None
+            # Optional vision encoder if present
+            vision_dir = os.path.join(model_path, "image_encoder")
+            if os.path.isdir(vision_dir):
+                try:
+                    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+                        model_path, subfolder="image_encoder", torch_dtype=torch_dtype, trust_remote_code=True
+                    ).to(target_device)
+                    feature_extractor = CLIPImageProcessor.from_pretrained(
+                        model_path, subfolder="feature_extractor", trust_remote_code=True
+                    )
+                except Exception:
+                    image_encoder = None
+                    feature_extractor = None
+        else:
+            # Single-file weights; use bundled config/tokenizer
+            text_config = _load_bundled_config(os.path.join("text_encoder", "config.json"))
+            if text_config is None:
+                raise ValueError("Bundled text encoder config not found.")
+
+            text_encoder = AutoModel.from_config(text_config, trust_remote_code=True).to(target_device, dtype=torch_dtype)
+            state_dict = load_safetensors(model_path, device="cpu")
+            missing, unexpected = text_encoder.load_state_dict(state_dict, strict=False)
+            if missing or unexpected:
+                print(f"Text encoder load: missing={len(missing)}, unexpected={len(unexpected)}")
 
         clip = LongCatCLIPWrapper(
             text_encoder=text_encoder,
@@ -430,12 +484,28 @@ class LongCatVAELoader:
 
     def load_vae(self, model_name: str, dtype: str, device: str):
         model_path = folder_paths.get_full_path("vae", model_name)
+        base_dir = model_path if os.path.isdir(model_path) else os.path.dirname(model_path)
 
         torch_dtype = DTYPE_MAP.get(dtype, torch.bfloat16)
         target_device = _resolve_device(device)
-        vae = AutoencoderKL.from_pretrained(
-            model_path, subfolder="vae", torch_dtype=torch_dtype
-        ).to(target_device)
+
+        if os.path.isdir(model_path):
+            vae = AutoencoderKL.from_pretrained(
+                model_path, subfolder="vae", torch_dtype=torch_dtype
+            ).to(target_device)
+        else:
+            # Single-file safetensors
+            vae_config = None
+            vae_config = _load_bundled_config(os.path.join("vae", "config.json"))
+            if vae_config is None:
+                raise ValueError("Bundled VAE config not found.")
+
+            vae = AutoencoderKL.from_config(vae_config).to(target_device, dtype=torch_dtype)
+            state_dict = load_safetensors(model_path, device="cpu")
+            missing, unexpected = vae.load_state_dict(state_dict, strict=False)
+            if missing or unexpected:
+                print(f"VAE load: missing={len(missing)}, unexpected={len(unexpected)}")
+
         wrapper = LongCatVAEWrapper(vae)
         return (wrapper,)
 
