@@ -43,98 +43,46 @@ def pil2tensor(images: List[Image.Image]) -> torch.Tensor:
     else:
         return torch.empty(0)
 
-class LongCatCheckpointLoader:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "ckpt_name": (folder_paths.get_filename_list("checkpoints"),),
-            },
-            "optional": {
-                "dtype": (["auto", "fp16", "bf16", "fp32"], {"default": "auto"}),
-            }
-        }
-
-    RETURN_TYPES = ("LONGCAT_MODEL", "LONGCAT_CLIP", "VAE")
-    RETURN_NAMES = ("model", "clip", "vae")
-    FUNCTION = "load_checkpoint"
-    CATEGORY = "LongCat"
-
-    def load_checkpoint(self, ckpt_name, dtype):
-        ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
-        
-        device = comfy.model_management.get_torch_device()
-        
-        torch_dtype = torch.float16
-        if dtype == "fp32":
-            torch_dtype = torch.float32
-        elif dtype == "bf16":
-            torch_dtype = torch.bfloat16
-        elif dtype == "auto":
-            try:
-                if comfy.model_management.should_use_fp16():
-                    torch_dtype = torch.float16
-                else:
-                    torch_dtype = torch.float32
-            except:
-                torch_dtype = torch.float16
-
-        # Load the pipeline from single file
-        # We use LongCatImageEditPipeline as it contains all components including image_encoder
-        pipeline = LongCatImageEditPipeline.from_single_file(
-            ckpt_path,
-            torch_dtype=torch_dtype
-        )
-        
-        # We return the pipeline itself as CLIP because it holds the text encoder and tokenizer
-        # We return the transformer as model
-        # We return the vae
-        
-        return (pipeline.transformer, pipeline, pipeline.vae)
-
 class TextEncodeLongCatImage:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "clip": ("LONGCAT_CLIP",),
+                "clip": ("CLIP",),
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
             }
         }
 
-    RETURN_TYPES = ("LONGCAT_CONDITIONING",)
+    RETURN_TYPES = ("CONDITIONING",)
     RETURN_NAMES = ("conditioning",)
     FUNCTION = "encode"
     CATEGORY = "LongCat"
 
     def encode(self, clip, prompt):
-        device = comfy.model_management.get_torch_device()
-        # clip is the pipeline object
-        pipeline = clip
+        tokens = clip.tokenize(prompt)
+        prompt_embeds = clip.encode_from_tokens(tokens, return_pooled=False)
         
-        # Ensure pipeline components are on device
-        pipeline.text_encoder.to(device)
+        device = prompt_embeds.device
+        dtype = prompt_embeds.dtype
         
-        with torch.no_grad():
-            prompt_embeds, text_ids = pipeline.encode_prompt(
-                prompts=[prompt],
-                device=device,
-                dtype=pipeline.text_encoder.dtype
-            )
+        text_ids = prepare_pos_ids(modality_id=0,
+                                   type='text',
+                                   start=(0, 0),
+                                   num_token=prompt_embeds.shape[1]).to(device, dtype=dtype)
             
         conditioning = {
             "prompt_embeds": prompt_embeds,
             "text_ids": text_ids,
         }
         
-        return (conditioning,)
+        return ([[prompt_embeds, conditioning]],)
 
 class TextEncodeLongCatImageEdit:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "clip": ("LONGCAT_CLIP",),
+                "clip": ("CLIP",),
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
             },
             "optional": {
@@ -145,15 +93,22 @@ class TextEncodeLongCatImageEdit:
             }
         }
 
-    RETURN_TYPES = ("LONGCAT_CONDITIONING",)
+    RETURN_TYPES = ("CONDITIONING",)
     RETURN_NAMES = ("conditioning",)
     FUNCTION = "encode"
     CATEGORY = "LongCat"
 
     def encode(self, clip, prompt, vae=None, image1=None, image2=None, image3=None):
-        device = comfy.model_management.get_torch_device()
-        pipeline = clip
-        pipeline.text_encoder.to(device)
+        tokens = clip.tokenize(prompt)
+        prompt_embeds = clip.encode_from_tokens(tokens, return_pooled=False)
+        
+        device = prompt_embeds.device
+        dtype = prompt_embeds.dtype
+        
+        text_ids = prepare_pos_ids(modality_id=0,
+                                   type='text',
+                                   start=(0, 0),
+                                   num_token=prompt_embeds.shape[1]).to(device, dtype=dtype)
         
         # Collect images
         images = []
@@ -164,14 +119,6 @@ class TextEncodeLongCatImageEdit:
         if len(images) > 0 and vae is None:
             raise ValueError("VAE is required when images are provided.")
 
-        with torch.no_grad():
-            prompt_embeds, text_ids = pipeline.encode_prompt(
-                prompts=[prompt],
-                device=device,
-                dtype=pipeline.text_encoder.dtype,
-                image=None # We skip image for text encoding for now to avoid size mismatch issues
-            )
-            
         conditioning = {
             "prompt_embeds": prompt_embeds,
             "text_ids": text_ids,
@@ -179,7 +126,7 @@ class TextEncodeLongCatImageEdit:
             "vae": vae
         }
         
-        return (conditioning,)
+        return ([[prompt_embeds, conditioning]],)
 
 class LongCatSizePicker:
     @classmethod
@@ -326,9 +273,9 @@ class LongCatSampler:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "model": ("LONGCAT_MODEL",),
-                "positive": ("LONGCAT_CONDITIONING",),
-                "negative": ("LONGCAT_CONDITIONING",),
+                "model": ("MODEL",),
+                "positive": ("CONDITIONING",),
+                "negative": ("CONDITIONING",),
                 "latent_image": ("LATENT",),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "steps": ("INT", {"default": 50, "min": 1, "max": 1000}),
@@ -348,7 +295,7 @@ class LongCatSampler:
 
     def sample(self, model, positive, negative, latent_image, seed, steps, cfg, sampler_name, scheduler, cfg_norm, cfg_renorm_min, control_after_generate):
         device = comfy.model_management.get_torch_device()
-        transformer = model
+        transformer = model.model.diffusion_model
         transformer.to(device)
         
         from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
@@ -400,17 +347,25 @@ class LongCatSampler:
                                                height=height//2,
                                                width=width//2).to(device, dtype=torch.float64)
 
-        prompt_embeds = positive["prompt_embeds"].to(device, dtype=transformer.dtype)
-        text_ids = positive["text_ids"].to(device, dtype=torch.float64)
+        # Unpack conditioning
+        # positive is [[cond, dict]]
+        pos_cond = positive[0][0]
+        pos_dict = positive[0][1]
         
-        neg_prompt_embeds = negative["prompt_embeds"].to(device, dtype=transformer.dtype)
+        neg_cond = negative[0][0]
+        neg_dict = negative[0][1]
+
+        prompt_embeds = pos_cond.to(device, dtype=transformer.dtype)
+        text_ids = pos_dict["text_ids"].to(device, dtype=torch.float64)
+        
+        neg_prompt_embeds = neg_cond.to(device, dtype=transformer.dtype)
         
         image_latents = None
         image_latents_ids = None
         
-        if "images" in positive and positive["images"] is not None:
-            images = positive["images"]
-            vae = positive["vae"]
+        if "images" in pos_dict and pos_dict["images"] is not None:
+            images = pos_dict["images"]
+            vae = pos_dict["vae"]
             
             from diffusers.image_processor import VaeImageProcessor
             image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor * 2)
@@ -496,7 +451,6 @@ class LongCatSampler:
         return ({"samples": unpacked},)
 
 NODE_CLASS_MAPPINGS = {
-    "LongCatCheckpointLoader": LongCatCheckpointLoader,
     "TextEncodeLongCatImage": TextEncodeLongCatImage,
     "TextEncodeLongCatImageEdit": TextEncodeLongCatImageEdit,
     "LongCatSizePicker": LongCatSizePicker,
@@ -505,7 +459,6 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "LongCatCheckpointLoader": "LongCat Checkpoint Loader",
     "TextEncodeLongCatImage": "Text Encode LongCat Image",
     "TextEncodeLongCatImageEdit": "Text Encode LongCat Image Edit",
     "LongCatSizePicker": "LongCat Size Picker",
