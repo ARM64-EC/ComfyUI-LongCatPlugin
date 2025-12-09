@@ -85,8 +85,3 @@ If you'd like, I can implement the `LongCatCheckpointLoader` improvements and th
 - **accelerate** for optional CPU/GPU offload helpers.
 - **PyTorch** for core tensor and model runtime.
 - **Pillow (PIL)** and **NumPy** for image/tensor conversions.
-- OpenAI / DeepSeek API usage scaffold in `misc/prompt_rewrite_api.py`.
-=======
-# ComfyUI-LongCatPlugin
-An third-Party implementation of LongCat to ComfyUI.
-<!-- merged from origin/main -->
