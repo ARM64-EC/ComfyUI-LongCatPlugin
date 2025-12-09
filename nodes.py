@@ -136,6 +136,7 @@ class LoadLongCatModel:
         return {
             "required": {
                 "unet_name": (folder_paths.get_filename_list("diffusion_models"),),
+                "gpu_only": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -144,7 +145,7 @@ class LoadLongCatModel:
     FUNCTION = "load_model"
     CATEGORY = "LongCat"
 
-    def load_model(self, unet_name):
+    def load_model(self, unet_name, gpu_only):
         unet_path = folder_paths.get_full_path("diffusion_models", unet_name)
         
         # Config from LongCat-Image-Edit/transformer/config.json
@@ -184,9 +185,20 @@ class LoadLongCatModel:
             
             def is_adm(self):
                 return False
+
+            def to(self, device):
+                self.diffusion_model.to(device)
+                return self
                 
         inner_model = LongCatInnerModel(model)
-        patcher = comfy.model_patcher.ModelPatcher(inner_model, load_device=comfy.model_management.get_torch_device(), offload_device=comfy.model_management.unet_offload_device())
+        
+        load_device = comfy.model_management.get_torch_device()
+        if gpu_only:
+            offload_device = load_device
+        else:
+            offload_device = comfy.model_management.unet_offload_device()
+            
+        patcher = comfy.model_patcher.ModelPatcher(inner_model, load_device=load_device, offload_device=offload_device)
         return (patcher,)
 
 class LongCatSizePicker:
@@ -355,9 +367,9 @@ class LongCatSampler:
     CATEGORY = "LongCat"
 
     def sample(self, model, positive, negative, latent_image, seed, steps, cfg, sampler_name, scheduler, cfg_norm, cfg_renorm_min, control_after_generate):
-        device = comfy.model_management.get_torch_device()
+        comfy.model_management.load_model_gpu(model)
         transformer = model.model.diffusion_model
-        transformer.to(device)
+        device = comfy.model_management.get_torch_device()
         
         from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
         
@@ -395,18 +407,20 @@ class LongCatSampler:
 
         num_channels_latents = 16
         vae_scale_factor = 8
-        pixel_step = vae_scale_factor * 2
-        height = int(height / pixel_step) * pixel_step
-        width = int(width / pixel_step) * pixel_step
         
-        latents = torch.randn((batch_size, num_channels_latents, height, width), generator=generator, device=device, dtype=transformer.dtype)
-        latents = _pack_latents(latents, batch_size, num_channels_latents, height, width)
+        # Calculate latent dimensions
+        # height/width are pixel dimensions
+        latent_height = 2 * (int(height) // (vae_scale_factor * 2))
+        latent_width = 2 * (int(width) // (vae_scale_factor * 2))
+        
+        latents = torch.randn((batch_size, num_channels_latents, latent_height, latent_width), generator=generator, device=device, dtype=transformer.dtype)
+        latents = _pack_latents(latents, batch_size, num_channels_latents, latent_height, latent_width)
         
         latent_image_ids = prepare_pos_ids(modality_id=1,
                                                type='image',
                                                start=(512, 512),
-                                               height=height//2,
-                                               width=width//2).to(device, dtype=torch.float64)
+                                               height=latent_height//2,
+                                               width=latent_width//2).to(device, dtype=torch.float64)
 
         # Unpack conditioning
         # positive is [[cond, dict]]
@@ -441,13 +455,13 @@ class LongCatSampler:
                 encoded = (encoded - vae.config.shift_factor) * vae.config.scaling_factor
                 encoded = encoded.to(dtype=transformer.dtype)
                 
-                image_latents = _pack_latents(encoded, encoded.shape[0], num_channels_latents, height, width)
+                image_latents = _pack_latents(encoded, encoded.shape[0], num_channels_latents, latent_height, latent_width)
                 
                 image_latents_ids = prepare_pos_ids(modality_id=2,
                                            type='image',
                                            start=(prompt_embeds.shape[1], prompt_embeds.shape[1]),
-                                           height=height//2,
-                                           width=width//2).to(device, dtype=torch.float64)
+                                           height=latent_height//2,
+                                           width=latent_width//2).to(device, dtype=torch.float64)
         
         if cfg > 1.0:
             prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds], dim=0)
@@ -507,7 +521,7 @@ class LongCatSampler:
 
                 latents = sched.step(noise_pred, t, latents, return_dict=False)[0]
 
-        unpacked = _unpack_latents(latents, height, width, vae_scale_factor)
+        unpacked = _unpack_latents(latents, latent_height, latent_width, vae_scale_factor)
         
         return ({"samples": unpacked},)
 
