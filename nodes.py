@@ -362,7 +362,7 @@ class LongCatCLIPLoader:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model_path": ("STRING", {"default": ""}),
+                "model_name": (folder_paths.get_filename_list("text_encoder"),),
                 "dtype": (["bf16", "fp16", "fp32"], {"default": "bf16"}),
                 "device": (list_available_devices(),),
             }
@@ -373,9 +373,8 @@ class LongCatCLIPLoader:
     FUNCTION = "load_clip"
     CATEGORY = "LongCat"
 
-    def load_clip(self, model_path: str, dtype: str, device: str):
-        if not model_path:
-            raise ValueError("Please provide a LongCat checkpoint directory for the CLIP loader.")
+    def load_clip(self, model_name: str, dtype: str, device: str):
+        model_path = folder_paths.get_full_path("text_encoder", model_name)
 
         torch_dtype = DTYPE_MAP.get(dtype, torch.bfloat16)
         target_device = _resolve_device(device)
@@ -418,7 +417,7 @@ class LongCatVAELoader:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model_path": ("STRING", {"default": ""}),
+                "model_name": (folder_paths.get_filename_list("vae"),),
                 "dtype": (["bf16", "fp16", "fp32"], {"default": "bf16"}),
                 "device": (list_available_devices(),),
             }
@@ -429,9 +428,8 @@ class LongCatVAELoader:
     FUNCTION = "load_vae"
     CATEGORY = "LongCat"
 
-    def load_vae(self, model_path: str, dtype: str, device: str):
-        if not model_path:
-            raise ValueError("Please provide a LongCat checkpoint directory for the VAE loader.")
+    def load_vae(self, model_name: str, dtype: str, device: str):
+        model_path = folder_paths.get_full_path("vae", model_name)
 
         torch_dtype = DTYPE_MAP.get(dtype, torch.bfloat16)
         target_device = _resolve_device(device)
