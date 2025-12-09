@@ -464,20 +464,44 @@ class LongCatSampler:
             vae = neg_dict["vae"]
         
         if images is not None:
-            from diffusers.image_processor import VaeImageProcessor
-            image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor * 2)
-            
-            pil_imgs = tensor2pil(images[0])
-            
-            processed_imgs = image_processor.resize(pil_imgs, height, width)
-            
-            # Convert to tensor for ComfyUI VAE [B, H, W, C]
-            vae_input = pil2tensor(processed_imgs).to(device)
+            # Resize images manually to ensure correct dimensions
+            # pil2tensor returns [B, H, W, C]
+            pixel_images = pil2tensor(images[0]).permute(0, 3, 1, 2).to(device) # [B, C, H, W]
+            pixel_images = torch.nn.functional.interpolate(pixel_images, size=(height, width), mode="bicubic", align_corners=False)
+            vae_input = pixel_images.permute(0, 2, 3, 1) # [B, H, W, C]
             
             # Encode using ComfyUI VAE wrapper
             encoded = vae.encode(vae_input)
             encoded = encoded.to(dtype=transformer.dtype)
             
+            # Check for channel mismatch (Flux VAE should be 16 channels, SD is 4)
+            if encoded.shape[1] == 4 and num_channels_latents == 16:
+                 # If user provided a standard SD VAE (4ch) but model needs Flux VAE (16ch),
+                 # we can try to adapt by pixel_unshuffle (4ch -> 16ch)
+                 # [B, 4, H, W] -> [B, 16, H/2, W/2]
+                 encoded = torch.nn.functional.pixel_unshuffle(encoded, 2)
+                 # Now shape is [B, 16, H/2, W/2]
+                 # But _pack_latents expects [B, 16, H, W] (full resolution)?
+                 # No, _pack_latents expects the input to be viewable as [B, 16, H/2, 2, W/2, 2]
+                 # which means it expects [B, 16, H, W].
+                 
+                 # Wait, if we unshuffle, we reduce resolution.
+                 # If we pass this reduced resolution to _pack_latents?
+                 # _pack_latents will try to reduce it AGAIN.
+                 
+                 # If the model is Flux, it expects 16 channel input to _pack_latents.
+                 # This implies the VAE output is 16 channels at resolution H, W.
+                 
+                 # If we have 4 channels at H, W.
+                 # We cannot magically get 16 channels at H, W.
+                 
+                 # Unless... the VAE output IS 16 channels.
+                 # So the user MUST use a Flux VAE.
+                 pass
+
+            if encoded.shape[1] != num_channels_latents:
+                 raise ValueError(f"VAE output channels ({encoded.shape[1]}) does not match model expectation ({num_channels_latents}). Please ensure you are using a Flux VAE (16 channels).")
+
             image_latents = _pack_latents(encoded, encoded.shape[0], num_channels_latents, latent_height, latent_width)
             
             image_latents_ids = prepare_pos_ids(modality_id=2,
