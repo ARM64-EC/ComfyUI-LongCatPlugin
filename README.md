@@ -14,6 +14,22 @@ ComfyUI nodes wrapping LongCat image generation and editing pipelines (diffusers
 - **LongCatSampler**: Handles the sampling process (denoising) using the LongCat transformer.
 - **LongCatImageSizeScale**: Scales images to a target pixel area and rounds dimensions to multiples of 16.
 
+## Implemented (What works today)
+- LongCat transformer: `LongCatImageTransformer2DModel` implemented and used by the pipelines.
+- Pipelines:
+    - `LongCatImagePipeline` (text-to-image): prompt rewrite, tokenizer usage, latent packing, denoising loop, and VAE decode implemented.
+    - `LongCatImageEditPipeline` (image editing): implemented with VL prompt handling, image latents, and edit-aware denoising.
+- Nodes (ComfyUI):
+    - `LongCatCheckpointLoader` (basic transformer load; CLIP/VAE loading is scaffolded/placeholder and needs improvements to map different checkpoint formats).
+    - `TextEncodeLongCatImage` (T2I text encoding; uses CLIP tokenizer/encoder)
+    - `TextEncodeLongCatImageEdit` (Edit text & image encoding — partially implemented; some behavior remains to be fully wired to CLIP/VL models)
+    - `VAEEncodeLongCat` and `VAEDecodeLongCat` (VAE encode / decode wrappers)
+    - `LongCatSampler` (wraps ComfyUI samplers)
+    - `LongCatImageSizeScale` (image scaling node)
+- Utilities: `longcat_image/utils/model_utils.py` provides functions like `pack_latents`/`unpack_latents`, `prepare_pos_ids`, `split_quotation`, `retrieve_timesteps`, and optimized scaling helpers.
+- Training examples: scripts and example configs for LoRA, SFT, Edit, and DPO training under `train_examples/`.
+- Tests: Minimal unit tests for nodes (`tests/test_nodes.py`) for CI / smoke check.
+
 ## Installation
 1.  **Copy Folder**: Copy the `comfyui_longcat` folder into your ComfyUI `custom_nodes` directory.
     *   Example: `ComfyUI/custom_nodes/comfyui_longcat`
@@ -38,34 +54,26 @@ ComfyUI nodes wrapping LongCat image generation and editing pipelines (diffusers
 - Tests: `pytest tests/test_nodes.py`
 - Key modules: `nodes.py`, `longcat_image/pipelines/*`, `longcat_image/models/longcat_image_dit.py`.
 
-## Status
+## To-Do
+### Completed / in-progress items
+- Implemented core transformer and pipelines for text-to-image and edit flows.
+- Node wrappers for basic operation and VAE/text encoding/decoding.
+- Training example scripts for LoRA, SFT, DPO, and Edit training flows.
 
-### Implemented (in this repo)
-- ComfyUI integration: several nodes and pipelines are implemented and available under `longcat`.
-- Nodes & pipelines: `LongCatCheckpointLoader`, `TextEncodeLongCatImage`, `TextEncodeLongCatImageEdit`, `VAEEncodeLongCat`, `VAEDecodeLongCat`, `LongCatSampler`, `LongCatImageSizeScale`.
-- Basic inference scripts: `scripts/inference_t2i.py`, `scripts/inference_edit.py`.
-- Core model implementation: `longcat_image/models/longcat_image_dit.py` and pipeline code in `longcat_image/pipelines/`.
-- Utilities: `longcat_image/utils/*` and helpers for distributed/accelerate usage.
-- Tests: basic pytest in `tests/test_nodes.py`.
-- Training examples present: `train_examples/` contains example scripts and configs for LoRA, SFT, DPO, and edit training.
+### Planned / Roadmap
+- [ ] Finalize `LongCatCheckpointLoader` to robustly load:
+    - Diffusers-style directory checkpoints (separate transformer, vae, tokenizer, scheduler subfolders)
+    - Single-file safetensors checkpoints and mapping to model components
+    - CLIP and VAE loading and correct device placement
+- [ ] Implement `TextEncodeLongCatImageEdit` fully (support multi-image & VL inputs and correct token/image merging).
+- [ ] Add documentation: step-by-step ComfyUI usage, example flow screenshots, and a model download/prepare helper script.
+- [ ] Add automated pipeline tests, including smoke tests and tests across dtype/device combos.
+- [ ] Add Git LFS support for model weights and an example of safe weight handling.
+- [ ] Add GitHub Actions CI to run linting and tests for PRs.
+- [ ] Add `pre-commit` config to avoid accidental commits of binary or cache files.
+- [ ] Add examples showing how to run training scripts for LoRA/SFT/DPO and how to apply saved checkpoints to the ComfyUI nodes.
 
-### In-repo examples (training)
-- `train_examples/lora/`: LoRA example training script and configs.
-- `train_examples/sft/`: Supervised Fine-Tuning example script and configs.
-- `train_examples/dpo/`: Direct Preference Optimization example script and configs.
-- `train_examples/edit/`: Edit-specific training examples.
-
-### Planned / To-Do
-- [ ] Add robust fallback when prompt rewriting model lacks `generate`.
-- [ ] Guard `LongCatImageEditPipeline` for `image=None` misuse.
-- [ ] Expand docs with example ComfyUI workflows, screenshots, and training tutorials (LoRA, SFT, DPO).
-- [ ] Provide a model download script and configuration guidance (including example HF hub integration).
-- [ ] Add comprehensive automated tests (pipeline smoke tests, dtype/device matrix, sample inputs).
-- [ ] Add example training recipes that are ready-to-run for LoRA/SFT/DPO and thorough documentation on the training steps.
-- [ ] Add Git LFS support for model weights and add guidance for releasing model checkpoints.
-- [ ] Add continuous integration (CI) to run tests and checks via GitHub Actions.
-- [ ] Add pre-commit hooks and consistent formatting (Black / isort / flake8).
-- [ ] Improve release and packaging automation (setup.py / wheel, CI release process).
+If you'd like, I can implement the `LongCatCheckpointLoader` improvements and the `TextEncodeLongCatImageEdit` node next, and add GitHub Actions for CI. 
 
 ## Credits
 - LongCat base model & pipelines: original LongCat project (LongCat team).
