@@ -1,6 +1,8 @@
-# ComfyUI LongCat Plugin
+# ComfyUI-LongCatPlugin
 
 [简体中文](README_CN.md)
+
+> Third-party implementation of LongCat for ComfyUI.
 
 ## Overview
 ComfyUI nodes wrapping LongCat image generation and editing pipelines (diffusers-based). Includes text-to-image and multi-image edit flows with prompt rewriting, aspect-aware sizing, and latent decoding for ComfyUI.
@@ -51,3 +53,7 @@ ComfyUI nodes wrapping LongCat image generation and editing pipelines (diffusers
 - **PyTorch** for core tensor and model runtime.
 - **Pillow (PIL)** and **NumPy** for image/tensor conversions.
 - OpenAI / DeepSeek API usage scaffold in `misc/prompt_rewrite_api.py`.
+=======
+# ComfyUI-LongCatPlugin
+An third-Party implementation of LongCat to ComfyUI.
+<!-- merged from origin/main -->
