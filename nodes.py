@@ -487,7 +487,7 @@ class LongCatSampler:
 
             # Encode using ComfyUI VAE wrapper
             encoded = vae.encode(vae_input)
-            encoded = encoded.to(dtype=transformer.dtype)
+            encoded = encoded.to(device=device, dtype=transformer.dtype)  # ensure VAE latents stay on sampler device
 
             # Check for channel mismatch (Flux VAE should be 16 channels, SD is 4)
             if encoded.shape[1] == 4 and num_channels_latents == 16:
