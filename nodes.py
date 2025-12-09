@@ -189,6 +189,15 @@ class LoadLongCatModel:
             def to(self, device):
                 self.diffusion_model.to(device)
                 return self
+
+            def state_dict(self, *args, **kwargs):
+                return self.diffusion_model.state_dict(*args, **kwargs)
+
+            def load_state_dict(self, *args, **kwargs):
+                return self.diffusion_model.load_state_dict(*args, **kwargs)
+
+            def parameters(self, *args, **kwargs):
+                return self.diffusion_model.parameters(*args, **kwargs)
                 
         inner_model = LongCatInnerModel(model)
         
