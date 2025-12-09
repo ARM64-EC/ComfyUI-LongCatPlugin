@@ -452,23 +452,21 @@ class LongCatSampler:
         if cfg > 1.0:
             prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds], dim=0)
         
-NODE_CLASS_MAPPINGS = {
-    "TextEncodeLongCatImage": TextEncodeLongCatImage,
-    "TextEncodeLongCatImageEdit": TextEncodeLongCatImageEdit,
-    "LongCatSizePicker": LongCatSizePicker,
-    "LongCatImageResizer": LongCatImageResizer,
-    "LongCatSampler": LongCatSampler,
-    "LoadLongCatModel": LoadLongCatModel,
-}
+        if image_latents is not None:
+            latent_image_ids = torch.cat([latent_image_ids, image_latents_ids], dim=0)
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "TextEncodeLongCatImage": "Text Encode LongCat Image",
-    "TextEncodeLongCatImageEdit": "Text Encode LongCat Image Edit",
-    "LongCatSizePicker": "LongCat Size Picker",
-    "LongCatImageResizer": "LongCat Image Resizer",
-    "LongCatSampler": "LongCat Sampler",
-    "LoadLongCatModel": "Load LongCat Model",
-}           steps,
+        sigmas = np.linspace(1.0, 1.0 / steps, steps)
+        image_seq_len = latents.shape[1]
+        mu = calculate_shift(
+            image_seq_len,
+            256,
+            4096,
+            0.5,
+            1.15,
+        )
+        timesteps, num_inference_steps = retrieve_timesteps(
+            sched,
+            steps,
             device,
             sigmas=sigmas,
             mu=mu,
@@ -519,6 +517,7 @@ NODE_CLASS_MAPPINGS = {
     "LongCatSizePicker": LongCatSizePicker,
     "LongCatImageResizer": LongCatImageResizer,
     "LongCatSampler": LongCatSampler,
+    "LoadLongCatModel": LoadLongCatModel,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -527,4 +526,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LongCatSizePicker": "LongCat Size Picker",
     "LongCatImageResizer": "LongCat Image Resizer",
     "LongCatSampler": "LongCat Sampler",
+    "LoadLongCatModel": "Load LongCat Model",
 }
