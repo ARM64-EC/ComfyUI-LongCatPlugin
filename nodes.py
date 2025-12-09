@@ -198,6 +198,12 @@ class LoadLongCatModel:
 
             def parameters(self, *args, **kwargs):
                 return self.diffusion_model.parameters(*args, **kwargs)
+
+            def modules(self, *args, **kwargs):
+                return self.diffusion_model.modules(*args, **kwargs)
+
+            def named_modules(self, *args, **kwargs):
+                return self.diffusion_model.named_modules(*args, **kwargs)
                 
         inner_model = LongCatInnerModel(model)
         
@@ -447,10 +453,17 @@ class LongCatSampler:
         image_latents = None
         image_latents_ids = None
         
+        images = None
+        vae = None
+        
         if "images" in pos_dict and pos_dict["images"] is not None:
             images = pos_dict["images"]
             vae = pos_dict["vae"]
-            
+        elif "images" in neg_dict and neg_dict["images"] is not None:
+            images = neg_dict["images"]
+            vae = neg_dict["vae"]
+        
+        if images is not None:
             from diffusers.image_processor import VaeImageProcessor
             image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor * 2)
             
