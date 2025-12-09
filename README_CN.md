@@ -87,4 +87,3 @@
 - **accelerate** 提供可选的 CPU/GPU offload。
 - **PyTorch** 提供核心张量与运行时。
 - **Pillow (PIL)** 与 **NumPy** 用于图像/张量转换。
-- `misc/prompt_rewrite_api.py` 中的 OpenAI/DeepSeek API 使用脚手架。
