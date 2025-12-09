@@ -470,20 +470,21 @@ class LongCatSampler:
             pil_imgs = tensor2pil(images[0])
             
             processed_imgs = image_processor.resize(pil_imgs, height, width)
-            processed_imgs = image_processor.preprocess(processed_imgs, height, width).to(device=device, dtype=vae.dtype)
             
-            with torch.no_grad():
-                encoded = vae.encode(processed_imgs).latent_dist.mode()
-                encoded = (encoded - vae.config.shift_factor) * vae.config.scaling_factor
-                encoded = encoded.to(dtype=transformer.dtype)
-                
-                image_latents = _pack_latents(encoded, encoded.shape[0], num_channels_latents, latent_height, latent_width)
-                
-                image_latents_ids = prepare_pos_ids(modality_id=2,
-                                           type='image',
-                                           start=(prompt_embeds.shape[1], prompt_embeds.shape[1]),
-                                           height=latent_height//2,
-                                           width=latent_width//2).to(device, dtype=torch.float64)
+            # Convert to tensor for ComfyUI VAE [B, H, W, C]
+            vae_input = pil2tensor(processed_imgs).to(device)
+            
+            # Encode using ComfyUI VAE wrapper
+            encoded = vae.encode(vae_input)
+            encoded = encoded.to(dtype=transformer.dtype)
+            
+            image_latents = _pack_latents(encoded, encoded.shape[0], num_channels_latents, latent_height, latent_width)
+            
+            image_latents_ids = prepare_pos_ids(modality_id=2,
+                                       type='image',
+                                       start=(prompt_embeds.shape[1], prompt_embeds.shape[1]),
+                                       height=latent_height//2,
+                                       width=latent_width//2).to(device, dtype=torch.float64)
         
         if cfg > 1.0:
             prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds], dim=0)
