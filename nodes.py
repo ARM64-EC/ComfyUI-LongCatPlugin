@@ -362,7 +362,7 @@ class LongCatCLIPLoader:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model_name": (folder_paths.get_filename_list("text_encoder"),),
+                "model_name": (folder_paths.get_filename_list("text_encoders"),),
                 "dtype": (["bf16", "fp16", "fp32"], {"default": "bf16"}),
                 "device": (list_available_devices(),),
             }
