@@ -7,7 +7,7 @@ from PIL import Image
 from typing import List, Union, Dict, Any, Optional
 import math
 
-from transformers import AutoTokenizer, AutoModel, AutoProcessor, CLIPImageProcessor, CLIPVisionModelWithProjection
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, AutoConfig, CLIPImageProcessor, CLIPVisionModelWithProjection
 from diffusers.models import AutoencoderKL
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from safetensors.torch import load_file as load_safetensors
@@ -67,6 +67,7 @@ DTYPE_MAP = {
 
 RESOURCE_DIR = os.path.join(current_dir, "longcat_image", "resources")
 BUNDLED_TOKENIZER_DIR = os.path.join(RESOURCE_DIR, "tokenizer")
+BUNDLED_TEXT_ENCODER_DIR = os.path.join(RESOURCE_DIR, "text_encoder")
 BUNDLED_TEXT_ENCODER_CONFIG = os.path.join(RESOURCE_DIR, "text_encoder", "config.json")
 BUNDLED_VAE_CONFIG = os.path.join(RESOURCE_DIR, "vae", "config.json")
 
@@ -428,7 +429,7 @@ class LongCatCLIPLoader:
         feature_extractor = None
 
         if os.path.isdir(model_path):
-            text_encoder = AutoModel.from_pretrained(
+            text_encoder = AutoModelForCausalLM.from_pretrained(
                 model_path, subfolder="text_encoder", torch_dtype=torch_dtype, trust_remote_code=True
             ).to(target_device)
             # Optional vision encoder if present
@@ -446,11 +447,15 @@ class LongCatCLIPLoader:
                     feature_extractor = None
         else:
             # Single-file weights; use bundled config/tokenizer
-            text_config = _load_bundled_config(os.path.join("text_encoder", "config.json"))
-            if text_config is None:
-                raise ValueError("Bundled text encoder config not found.")
+            config_dict = _load_config_from_metadata(model_path)
+            if config_dict is not None:
+                text_config = AutoConfig.from_dict(config_dict)
+            else:
+                text_config = AutoConfig.from_pretrained(BUNDLED_TEXT_ENCODER_DIR, trust_remote_code=True)
 
-            text_encoder = AutoModel.from_config(text_config, trust_remote_code=True).to(target_device, dtype=torch_dtype)
+            text_encoder = AutoModelForCausalLM.from_config(text_config, trust_remote_code=True).to(
+                target_device, dtype=torch_dtype
+            )
             state_dict = load_safetensors(model_path, device="cpu")
             missing, unexpected = text_encoder.load_state_dict(state_dict, strict=False)
             if missing or unexpected:
@@ -495,12 +500,13 @@ class LongCatVAELoader:
             ).to(target_device)
         else:
             # Single-file safetensors
-            vae_config = None
-            vae_config = _load_bundled_config(os.path.join("vae", "config.json"))
-            if vae_config is None:
+            config_dict = _load_config_from_metadata(model_path)
+            if config_dict is None:
+                config_dict = _load_bundled_config(os.path.join("vae", "config.json"))
+            if config_dict is None:
                 raise ValueError("Bundled VAE config not found.")
 
-            vae = AutoencoderKL.from_config(vae_config).to(target_device, dtype=torch_dtype)
+            vae = AutoencoderKL.from_config(config_dict).to(target_device, dtype=torch_dtype)
             state_dict = load_safetensors(model_path, device="cpu")
             missing, unexpected = vae.load_state_dict(state_dict, strict=False)
             if missing or unexpected:
