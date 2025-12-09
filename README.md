@@ -8,11 +8,12 @@
 ComfyUI nodes wrapping LongCat image generation and editing pipelines (diffusers-based). Includes text-to-image and multi-image edit flows with prompt rewriting, aspect-aware sizing, and latent decoding for ComfyUI.
 
 ## Features
-- **LongCatCheckpointLoader**: Loads the LongCat model components (Model, CLIP, VAE).
-- **TextEncodeLongCatImage / TextEncodeLongCatImageEdit**: Encodes text prompts and reference images (for editing) into conditioning.
-- **VAEEncodeLongCat / VAEDecodeLongCat**: Encodes images to latents and decodes latents to images using the LongCat VAE.
-- **LongCatSampler**: Handles the sampling process (denoising) using the LongCat transformer.
-- **LongCatImageSizeScale**: Scales images to a target pixel area and rounds dimensions to multiples of 16.
+ - **LongCatPipelineLoader**: Loads the LongCat pipeline and exposes Model/CLIP/VAE components.
+ - **TextEncodeLongCatImage / TextEncodeLongCatImageEdit**: Encodes text prompts and reference images (for editing) into conditioning.
+ - **LongCatSizePicker**: Selects the target supported resolutions and produces empty latents of the correct size.
+ - **LongCatImageResizer**: Resize input images to the nearest LongCat supported resolution using several strategies.
+ - **LongCatSampler**: Handles the sampling process (denoising) using the LongCat transformer.
+ - **LongCatImageSizeScale**: Scales images to a target pixel area and rounds dimensions to multiples of 16.
 
 ## Implemented (What works today)
 - LongCat transformer: `LongCatImageTransformer2DModel` implemented and used by the pipelines.
@@ -20,11 +21,12 @@ ComfyUI nodes wrapping LongCat image generation and editing pipelines (diffusers
     - `LongCatImagePipeline` (text-to-image): prompt rewrite, tokenizer usage, latent packing, denoising loop, and VAE decode implemented.
     - `LongCatImageEditPipeline` (image editing): implemented with VL prompt handling, image latents, and edit-aware denoising.
 - Nodes (ComfyUI):
-    - `LongCatCheckpointLoader` (basic transformer load; CLIP/VAE loading is scaffolded/placeholder and needs improvements to map different checkpoint formats).
+    - `LongCatPipelineLoader` (basic loader for pipelines; returns (model, pipeline, vae) so other nodes can reference them).
     - `TextEncodeLongCatImage` (T2I text encoding; uses CLIP tokenizer/encoder)
     - `TextEncodeLongCatImageEdit` (Edit text & image encoding — partially implemented; some behavior remains to be fully wired to CLIP/VL models)
-    - `VAEEncodeLongCat` and `VAEDecodeLongCat` (VAE encode / decode wrappers)
-    - `LongCatSampler` (wraps ComfyUI samplers)
+    - `LongCatSizePicker` (picks supported resolutions and returns empty latents)
+    - `LongCatImageResizer` (resize/pad/crop strategies to fit LongCat resolutions)
+    - `LongCatSampler` (wraps ComfyUI-supported sampler calls into the LongCat denoising loop)
     - `LongCatImageSizeScale` (image scaling node)
 - Utilities: `longcat_image/utils/model_utils.py` provides functions like `pack_latents`/`unpack_latents`, `prepare_pos_ids`, `split_quotation`, `retrieve_timesteps`, and optimized scaling helpers.
 - Training examples: scripts and example configs for LoRA, SFT, Edit, and DPO training under `train_examples/`.
@@ -42,12 +44,13 @@ ComfyUI nodes wrapping LongCat image generation and editing pipelines (diffusers
 
 ## Usage in ComfyUI
 - Put this plugin folder into ComfyUI `custom_nodes`, then restart.
-- Nodes appear under category `longcat`.
+- Nodes appear under category `LongCat`.
 - **Workflow**:
-    1. Load model with `LongCatCheckpointLoader`.
-    2. Connect `CLIP` to `TextEncodeLongCatImage` (T2I) or `TextEncodeLongCatImageEdit` (Edit).
-    3. Connect `VAE` to `VAEEncodeLongCat` (if using image input) and `VAEDecodeLongCat`.
-    4. Connect `MODEL`, `CONDITIONING` (Positive/Negative), and `LATENT` to `LongCatSampler`.
+    1. Load the model/pipeline with `LongCatPipelineLoader` (returns `model`, `clip` (pipeline), and `vae`).
+    2. Use `TextEncodeLongCatImage` for text-to-image or `TextEncodeLongCatImageEdit` when editing or using reference images; connect the `clip`/pipeline node to these encoders.
+    3. Use `LongCatSizePicker` to pick a supported resolution and create an empty latent (or use your own latents).
+    4. Use `LongCatImageResizer` to resize reference images to the nearest supported LongCat resolution (if needed).
+    5. Connect the `MODEL`, `CONDITIONING` (Positive/Negative), and `LATENT` to `LongCatSampler` to run the LongCat denoising process.
 - Set `model_path` to your downloaded LongCat checkpoint; on CUDA you may enable `cpu_offload` to save VRAM.
 
 ## Development
@@ -61,7 +64,7 @@ ComfyUI nodes wrapping LongCat image generation and editing pipelines (diffusers
 - Training example scripts for LoRA, SFT, DPO, and Edit training flows.
 
 ### Planned / Roadmap
-- [ ] Finalize `LongCatCheckpointLoader` to robustly load:
+ - [ ] Finalize `LongCatPipelineLoader` to robustly load:
     - Diffusers-style directory checkpoints (separate transformer, vae, tokenizer, scheduler subfolders)
     - Single-file safetensors checkpoints and mapping to model components
     - CLIP and VAE loading and correct device placement

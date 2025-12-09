@@ -54,7 +54,7 @@ if parent_dir not in sys.path:
 
 # Import nodes after mocking
 from nodes import (
-    LongCatPipelineLoader,
+    LongCatCheckpointLoader,
     TextEncodeLongCatImage,
     TextEncodeLongCatImageEdit,
     LongCatSizePicker,
@@ -75,8 +75,8 @@ class TestLongCatNodes(unittest.TestCase):
         mock_pipeline.vae = MagicMock()
         mock_pipeline_cls.from_single_file.return_value = mock_pipeline
         
-        loader = LongCatPipelineLoader()
-        model, clip, vae = loader.load_pipeline("model.safetensors", "fp16")
+        loader = LongCatCheckpointLoader()
+        model, clip, vae = loader.load_checkpoint("model.safetensors", "fp16")
         
         self.assertEqual(model, mock_pipeline.transformer)
         self.assertEqual(clip, mock_pipeline)

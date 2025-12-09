@@ -43,7 +43,7 @@ def pil2tensor(images: List[Image.Image]) -> torch.Tensor:
     else:
         return torch.empty(0)
 
-class LongCatPipelineLoader:
+class LongCatCheckpointLoader:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -57,10 +57,10 @@ class LongCatPipelineLoader:
 
     RETURN_TYPES = ("LONGCAT_MODEL", "LONGCAT_CLIP", "VAE")
     RETURN_NAMES = ("model", "clip", "vae")
-    FUNCTION = "load_pipeline"
+    FUNCTION = "load_checkpoint"
     CATEGORY = "LongCat"
 
-    def load_pipeline(self, ckpt_name, dtype):
+    def load_checkpoint(self, ckpt_name, dtype):
         ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
         
         device = comfy.model_management.get_torch_device()
@@ -496,7 +496,7 @@ class LongCatSampler:
         return ({"samples": unpacked},)
 
 NODE_CLASS_MAPPINGS = {
-    "LongCatPipelineLoader": LongCatPipelineLoader,
+    "LongCatCheckpointLoader": LongCatCheckpointLoader,
     "TextEncodeLongCatImage": TextEncodeLongCatImage,
     "TextEncodeLongCatImageEdit": TextEncodeLongCatImageEdit,
     "LongCatSizePicker": LongCatSizePicker,
@@ -505,7 +505,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "LongCatPipelineLoader": "LongCat Pipeline Loader",
+    "LongCatCheckpointLoader": "LongCat Checkpoint Loader",
     "TextEncodeLongCatImage": "Text Encode LongCat Image",
     "TextEncodeLongCatImageEdit": "Text Encode LongCat Image Edit",
     "LongCatSizePicker": "LongCat Size Picker",

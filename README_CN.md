@@ -11,6 +11,12 @@
 - **VAEEncodeLongCat / VAEDecodeLongCat**：使用 LongCat VAE 将图像编码为潜变量，或将潜变量解码为图像。
 - **LongCatSampler**：使用 LongCat Transformer 进行采样（去噪）。
 - **LongCatImageSizeScale**：按目标像素面积缩放，并将宽高对齐到 16 的倍数。
+ - **LongCatPipelineLoader**：加载 LongCat 管线并返回 Model/CLIP/ VAE 组件。
+ - **TextEncodeLongCatImage / TextEncodeLongCatImageEdit**：将文本提示词和参考图（编辑模式）编码为条件。
+ - **LongCatSizePicker**：从支持的分辨率中选择目标并产生空 latent。
+ - **LongCatImageResizer**：将输入图像转换为最近支持的 LongCat 分辨率（支持拉伸、填充、裁剪等策略）。
+ - **LongCatSampler**：使用 LongCat Transformer 进行采样（支持编辑条件）。
+ - **LongCatImageSizeScale**：按目标像素面积缩放，并将宽高对齐到 16 的倍数。
 
 ## 已实现（当前可用）
 - Transformer: `LongCatImageTransformer2DModel` 已实现并用于管线。
@@ -18,11 +24,12 @@
     - `LongCatImagePipeline`（文生图）：实现了提示词改写、tokenizer、潜变量打包、去噪循环与 VAE 解码等功能。
     - `LongCatImageEditPipeline`（图像编辑）：实现了视觉-语言提示处理、图像潜变量与编辑专用去噪逻辑。
 - 节点（ComfyUI）：
-    - `LongCatCheckpointLoader`：实现了基本的 transformer 加载（注意：CLIP/VAE 的完全加载仍为占位/脚手架实现，需要改进以支持多种模型格式）。
+    - `LongCatPipelineLoader`：实现了基本的管线加载（返回 transformer, pipeline, vae，以便其他节点使用）。
     - `TextEncodeLongCatImage`：T2I 文本编码实现（基于 CLIP tokenizer/encoder）。
     - `TextEncodeLongCatImageEdit`：编辑模式的文本+图像编码（部分实现，尚需完善对 CLIP/VL 的完整支持）。
-    - `VAEEncodeLongCat` 与 `VAEDecodeLongCat`：VAE 编码/解码封装。
-    - `LongCatSampler`：封装 ComfyUI 的采样器。
+    - `LongCatSizePicker`：支持选择分辨率并返回空的 latent。
+    - `LongCatImageResizer`：将输入图像按照策略调整为 LongCat 支持的分辨率。
+    - `LongCatSampler`：封装 LongCat 的采样流程。
     - `LongCatImageSizeScale`：图像缩放节点。
 - 工具函数：`longcat_image/utils/model_utils.py` 包含 `pack_latents`/`unpack_latents`、`prepare_pos_ids`、`split_quotation`、`retrieve_timesteps`、`optimized_scale` 等函数。
 - 训练示例：包含 LoRA、SFT、DPO、编辑训练脚本和示例配置（位于 `train_examples/`）。
@@ -40,11 +47,11 @@
 
 ## 在 ComfyUI 中使用
 - 将本插件目录放入 ComfyUI 的 `custom_nodes`，重启后生效。
-- 节点位于分类 `longcat`。
+- 节点位于分类 `LongCat`。
 - **工作流**：
-    1. 使用 `LongCatCheckpointLoader` 加载模型。
+    1. 使用 `LongCatPipelineLoader` 加载模型（返回 `model`、`clip`、`vae`）。
     2. 连接 `CLIP` 到 `TextEncodeLongCatImage` (文生图) 或 `TextEncodeLongCatImageEdit` (编辑)。
-    3. 连接 `VAE` 到 `VAEEncodeLongCat` (如有图像输入) 和 `VAEDecodeLongCat`。
+    3. (可选) 将 `VAE` 传入 `TextEncodeLongCatImageEdit`（用于图像编码），或用于自定义 VAE 节点。
     4. 连接 `MODEL`、`CONDITIONING` (正向/负向) 和 `LATENT` 到 `LongCatSampler`。
 - `model_path` 指向已下载的 LongCat 权重；在 CUDA 上可开启 `cpu_offload` 以节省显存。
 
