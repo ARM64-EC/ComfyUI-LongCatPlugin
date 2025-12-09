@@ -10,6 +10,7 @@ import folder_paths
 import comfy.model_management
 import comfy.utils
 import comfy.sd
+import comfy.model_patcher
 
 # Add current directory to sys.path to ensure imports work
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -18,6 +19,7 @@ if current_dir not in sys.path:
 
 from longcat_image.pipelines.pipeline_longcat_image_edit import LongCatImageEditPipeline
 from longcat_image.pipelines.pipeline_longcat_image import LongCatImagePipeline
+from longcat_image.models.longcat_image_dit import LongCatImageTransformer2DModel
 from longcat_image.dataset.data_utils import MULTI_ASPECT_RATIO_1024, MULTI_ASPECT_RATIO_512, MULTI_ASPECT_RATIO_256
 from longcat_image.utils.model_utils import calculate_shift, retrieve_timesteps, prepare_pos_ids
 
@@ -127,6 +129,65 @@ class TextEncodeLongCatImageEdit:
         }
         
         return ([[prompt_embeds, conditioning]],)
+
+class LoadLongCatModel:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "unet_name": (folder_paths.get_filename_list("diffusion_models"),),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "load_model"
+    CATEGORY = "LongCat"
+
+    def load_model(self, unet_name):
+        unet_path = folder_paths.get_full_path("diffusion_models", unet_name)
+        
+        # Config from LongCat-Image-Edit/transformer/config.json
+        config = {
+            "patch_size": 1,
+            "in_channels": 64,
+            "num_layers": 10,
+            "num_single_layers": 20,
+            "attention_head_dim": 128,
+            "num_attention_heads": 24,
+            "joint_attention_dim": 3584,
+            "pooled_projection_dim": 3584,
+            "axes_dims_rope": [16, 56, 56],
+        }
+        
+        # Instantiate model
+        model = LongCatImageTransformer2DModel(**config)
+        
+        # Load weights
+        sd = comfy.utils.load_torch_file(unet_path)
+        
+        # Handle potential key mismatches
+        # If loading from a file that was part of a diffusers directory, keys might be correct.
+        m, u = model.load_state_dict(sd, strict=False)
+        if len(m) > 0 or len(u) > 0:
+            print(f"LongCat Model Load: Missing {len(m)} keys, Unexpected {len(u)} keys")
+            
+        # Wrap for ComfyUI
+        class LongCatInnerModel:
+            def __init__(self, diffusion_model):
+                self.diffusion_model = diffusion_model
+                self.latent_format = None 
+                self.manual_cast_dtype = None
+            
+            def get_dtype(self):
+                return self.diffusion_model.dtype
+            
+            def is_adm(self):
+                return False
+                
+        inner_model = LongCatInnerModel(model)
+        patcher = comfy.model_patcher.ModelPatcher(inner_model, load_device=comfy.model_management.get_torch_device(), offload_device=comfy.model_management.unet_offload_device())
+        return (patcher,)
 
 class LongCatSizePicker:
     @classmethod
@@ -391,21 +452,23 @@ class LongCatSampler:
         if cfg > 1.0:
             prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds], dim=0)
         
-        if image_latents is not None:
-            latent_image_ids = torch.cat([latent_image_ids, image_latents_ids], dim=0)
+NODE_CLASS_MAPPINGS = {
+    "TextEncodeLongCatImage": TextEncodeLongCatImage,
+    "TextEncodeLongCatImageEdit": TextEncodeLongCatImageEdit,
+    "LongCatSizePicker": LongCatSizePicker,
+    "LongCatImageResizer": LongCatImageResizer,
+    "LongCatSampler": LongCatSampler,
+    "LoadLongCatModel": LoadLongCatModel,
+}
 
-        sigmas = np.linspace(1.0, 1.0 / steps, steps)
-        image_seq_len = latents.shape[1]
-        mu = calculate_shift(
-            image_seq_len,
-            256,
-            4096,
-            0.5,
-            1.15,
-        )
-        timesteps, num_inference_steps = retrieve_timesteps(
-            sched,
-            steps,
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "TextEncodeLongCatImage": "Text Encode LongCat Image",
+    "TextEncodeLongCatImageEdit": "Text Encode LongCat Image Edit",
+    "LongCatSizePicker": "LongCat Size Picker",
+    "LongCatImageResizer": "LongCat Image Resizer",
+    "LongCatSampler": "LongCat Sampler",
+    "LoadLongCatModel": "Load LongCat Model",
+}           steps,
             device,
             sigmas=sigmas,
             mu=mu,
