@@ -148,10 +148,23 @@ class LongCatImageEditPipeline(
             return_tensors='pt')
         text = self.prompt_template_encode_prefix
         
+        num_images = len(image) if isinstance(image, list) else 1
+        if num_images > 1:
+            single_image_placeholder = "<|vision_start|><|image_pad|><|vision_end|>"
+            if single_image_placeholder in text:
+                multi_image_placeholder = single_image_placeholder * num_images
+                text = text.replace(single_image_placeholder, multi_image_placeholder)
+
         merge_length = self.image_processor_vl.merge_size**2
+        image_idx = 0
         while self.image_token in text:
-            num_image_tokens = image_grid_thw.prod() // merge_length
-            text = text.replace(self.image_token, "<|placeholder|>" * num_image_tokens, 1)
+            if image_idx < len(image_grid_thw):
+                grid = image_grid_thw[image_idx]
+                num_image_tokens = grid.prod() // merge_length
+                text = text.replace(self.image_token, "<|placeholder|>" * int(num_image_tokens), 1)
+                image_idx += 1
+            else:
+                break
         text = text.replace("<|placeholder|>", self.image_token)
 
         prefix_tokens = self.tokenizer(text, add_special_tokens=False)['input_ids']
@@ -280,7 +293,7 @@ class LongCatImageEditPipeline(
             image_latents = (image_latents - self.vae.config.shift_factor) *  self.vae.config.scaling_factor
             image_latents = image_latents.to(device=self.device, dtype=dtype)
             image_latents = self._pack_latents(
-                image_latents, batch_size, num_channels_latents, height, width
+                image_latents, image_latents.shape[0], num_channels_latents, height, width
             )
 
             image_latents_ids = prepare_pos_ids(modality_id=2,
@@ -289,6 +302,9 @@ class LongCatImageEditPipeline(
                                                   prompt_embeds_length),
                                            height=height//2,
                                            width=width//2).to(device, dtype=torch.float64)
+            
+            if image_latents.shape[0] != batch_size:
+                 image_latents = image_latents.repeat(batch_size // image_latents.shape[0], 1, 1)
         
         if isinstance(generator, list) and len(generator) != batch_size:
             raise ValueError(
@@ -369,6 +385,9 @@ class LongCatImageEditPipeline(
         else:
             batch_size = prompt_embeds.shape[0]
         
+        if isinstance(image, list):
+            batch_size = max(batch_size, len(image))
+
         device = self._execution_device
 
         image = self.image_processor.resize(image, calculated_height, calculated_width)

@@ -1,291 +1,514 @@
-import math
 import os
 import sys
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-# Add the directory containing this file to sys.path to allow importing longcat_image
-# which is located in the same directory
-current_file_path = Path(__file__).resolve()
-node_dir = current_file_path.parent
-if str(node_dir) not in sys.path:
-    sys.path.insert(0, str(node_dir))
-
-import numpy as np
 import torch
-import torch.nn.functional as F
+import numpy as np
 from PIL import Image
-from transformers import AutoProcessor
+from typing import List, Union, Dict, Any, Optional
+import math
 
-# ComfyUI imports
 import folder_paths
-import comfy.sd
-import comfy.utils
 import comfy.model_management
-import comfy.samplers
-import comfy.model_patcher
-import comfy.clip_vision
+import comfy.utils
+import comfy.sd
 
-from longcat_image.models import LongCatImageTransformer2DModel
-from longcat_image.pipelines import LongCatImageEditPipeline, LongCatImagePipeline
-from longcat_image.pipelines.pipeline_longcat_image_edit import calculate_dimensions
-from longcat_image.utils.model_utils import prepare_pos_ids, calculate_shift, retrieve_timesteps
+# Add current directory to sys.path to ensure imports work
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
 
+from longcat_image.pipelines.pipeline_longcat_image_edit import LongCatImageEditPipeline
+from longcat_image.pipelines.pipeline_longcat_image import LongCatImagePipeline
+from longcat_image.dataset.data_utils import MULTI_ASPECT_RATIO_1024, MULTI_ASPECT_RATIO_512, MULTI_ASPECT_RATIO_256
+from longcat_image.utils.model_utils import calculate_shift, retrieve_timesteps, prepare_pos_ids
 
-# Helpers for device/dtype
-def _select_device() -> torch.device:
-    return comfy.model_management.get_torch_device()
-
-def _select_dtype(device: torch.device) -> torch.dtype:
-    # ComfyUI usually handles this, but we can default to fp16 for inference
-    return torch.float16
-
-def _torch_image_to_pil_list(image: torch.Tensor) -> List[Image.Image]:
-    if image.dim() == 3:
-        image = image.unsqueeze(0)
-    image = image.clamp(0, 1).detach().cpu()
+def tensor2pil(image: torch.Tensor) -> List[Image.Image]:
+    # image: [B, H, W, C]
+    batch_count = image.size(0)
     pil_images = []
-    for img in image:
-        np_img = (img.numpy() * 255.0).round().astype(np.uint8)
-        pil_images.append(Image.fromarray(np_img))
+    for i in range(batch_count):
+        img = image[i].cpu().numpy()
+        img = (img * 255.0).clip(0, 255).astype(np.uint8)
+        pil_images.append(Image.fromarray(img))
     return pil_images
 
-def _pil_list_to_torch(images: List[Image.Image]) -> torch.Tensor:
+def pil2tensor(images: List[Image.Image]) -> torch.Tensor:
     tensors = []
     for img in images:
-        np_img = np.array(img, copy=False)
-        if np_img.ndim == 2:
-            np_img = np.repeat(np_img[..., None], 3, axis=2)
-        tensor = torch.from_numpy(np_img.astype(np.float32) / 255.0)
-        tensors.append(tensor)
-    if not tensors:
-        return torch.zeros((1, 512, 512, 3), dtype=torch.float32)
-    return torch.stack(tensors, dim=0)
+        # Convert to numpy, normalize to 0-1
+        np_img = np.array(img).astype(np.float32) / 255.0
+        tensors.append(torch.from_numpy(np_img))
+    # Stack to [B, H, W, C]
+    if len(tensors) > 0:
+        return torch.stack(tensors, dim=0)
+    else:
+        return torch.empty(0)
 
-def _round_to_multiple(value: int, multiple: int = 16) -> int:
-    return int(math.ceil(value / multiple) * multiple)
-
-
-# --- Loaders & Wrappers ---
-
-class LongCatCheckpointLoader:
+class LongCatPipelineLoader:
     @classmethod
-    def INPUT_TYPES(cls):
+    def INPUT_TYPES(s):
         return {
             "required": {
                 "ckpt_name": (folder_paths.get_filename_list("checkpoints"),),
+            },
+            "optional": {
+                "dtype": (["auto", "fp16", "bf16", "fp32"], {"default": "auto"}),
             }
         }
 
-    RETURN_TYPES = ("MODEL", "CLIP", "VAE")
-    FUNCTION = "load_checkpoint"
-    CATEGORY = "longcat"
+    RETURN_TYPES = ("LONGCAT_MODEL", "LONGCAT_CLIP", "VAE")
+    RETURN_NAMES = ("model", "clip", "vae")
+    FUNCTION = "load_pipeline"
+    CATEGORY = "LongCat"
 
-    def load_checkpoint(self, ckpt_name: str):
+    def load_pipeline(self, ckpt_name, dtype):
         ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
         
-        # Load state dict
-        sd = comfy.utils.load_torch_file(ckpt_path)
+        device = comfy.model_management.get_torch_device()
         
-        # Load Model (Transformer)
-        # We assume the checkpoint contains the transformer weights or is a diffusers dump
-        # If it's a single file, we need to know the prefix or structure.
-        # For now, let's assume it's a standard Diffusers-style checkpoint loaded as a dict.
-        # If it's a folder, comfy.utils.load_torch_file might fail or return dict of files?
-        # folder_paths usually returns file paths.
-        
-        # Initialize Transformer
-        # We need config. If not in checkpoint, we might need default config.
-        # Assuming standard LongCat config for now.
-        transformer = LongCatImageTransformer2DModel(
-            patch_size=2,
-            in_channels=16,
-            num_layers=28,
-            num_single_layers=10, # Example default, adjust as needed
-            attention_head_dim=72,
-            num_attention_heads=16,
-            joint_attention_dim=768, # Example default
-            pooled_projection_dim=768, # Example default
-            axes_dims_rope=[16, 56, 56],
+        torch_dtype = torch.float16
+        if dtype == "fp32":
+            torch_dtype = torch.float32
+        elif dtype == "bf16":
+            torch_dtype = torch.bfloat16
+        elif dtype == "auto":
+            try:
+                if comfy.model_management.should_use_fp16():
+                    torch_dtype = torch.float16
+                else:
+                    torch_dtype = torch.float32
+            except:
+                torch_dtype = torch.float16
+
+        # Load the pipeline from single file
+        # We use LongCatImageEditPipeline as it contains all components including image_encoder
+        pipeline = LongCatImageEditPipeline.from_single_file(
+            ckpt_path,
+            torch_dtype=torch_dtype
         )
         
-        # Load weights into transformer
-        # We might need to filter keys if the checkpoint contains CLIP/VAE too.
-        # This is a simplification. Real implementation needs robust key mapping.
-        # transformer.load_state_dict(sd, strict=False) 
+        # We return the pipeline itself as CLIP because it holds the text encoder and tokenizer
+        # We return the transformer as model
+        # We return the vae
         
-        # Wrap in ModelPatcher
-        model = comfy.model_patcher.ModelPatcher(transformer, load_device=comfy.model_management.get_torch_device(), offload_device=comfy.model_management.unet_offload_device())
-        
-        # Load CLIP
-        # Using Comfy's CLIP loader logic if possible, or creating one.
-        # clip = comfy.sd.load_clip(ckpt_path) # This might work if it's a supported format
-        
-        # Load VAE
-        # vae = comfy.sd.load_vae(ckpt_path)
-        
-        # Placeholder for actual loading logic which depends on file format
-        # For this refactor, we assume we return standard objects.
-        
-        return (model, None, None) # Placeholder
-
-
-# --- Encoders ---
+        return (pipeline.transformer, pipeline, pipeline.vae)
 
 class TextEncodeLongCatImage:
     @classmethod
-    def INPUT_TYPES(cls):
+    def INPUT_TYPES(s):
         return {
             "required": {
-                "clip": ("CLIP",),
-                "prompt": ("STRING", {"multiline": True}),
-                "enable_prompt_rewrite": ("BOOLEAN", {"default": True}),
+                "clip": ("LONGCAT_CLIP",),
+                "prompt": ("STRING", {"multiline": True, "default": ""}),
             }
         }
 
-    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_TYPES = ("LONGCAT_CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
     FUNCTION = "encode"
-    CATEGORY = "longcat"
+    CATEGORY = "LongCat"
 
-    def encode(self, clip: Any, prompt: str, enable_prompt_rewrite: bool):
-        # clip is now a comfy.sd.CLIP object
-        # We can use standard encoding or custom logic
+    def encode(self, clip, prompt):
+        device = comfy.model_management.get_torch_device()
+        # clip is the pipeline object
+        pipeline = clip
         
-        tokens = clip.tokenize(prompt)
-        cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
+        # Ensure pipeline components are on device
+        pipeline.text_encoder.to(device)
         
-        # Pack into CONDITIONING
-        return ([[cond, {"pooled_output": pooled}]],)
-
+        with torch.no_grad():
+            prompt_embeds, text_ids = pipeline.encode_prompt(
+                prompts=[prompt],
+                device=device,
+                dtype=pipeline.text_encoder.dtype
+            )
+            
+        conditioning = {
+            "prompt_embeds": prompt_embeds,
+            "text_ids": text_ids,
+        }
+        
+        return (conditioning,)
 
 class TextEncodeLongCatImageEdit:
     @classmethod
-    def INPUT_TYPES(cls):
+    def INPUT_TYPES(s):
         return {
             "required": {
-                "clip": ("CLIP",),
-                "vae": ("VAE",),
-                "image1": ("IMAGE",),
-                "prompt": ("STRING", {"multiline": True}),
+                "clip": ("LONGCAT_CLIP",),
+                "prompt": ("STRING", {"multiline": True, "default": ""}),
             },
             "optional": {
+                "vae": ("VAE",),
+                "image1": ("IMAGE",),
                 "image2": ("IMAGE",),
                 "image3": ("IMAGE",),
             }
         }
 
-    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_TYPES = ("LONGCAT_CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
     FUNCTION = "encode"
-    CATEGORY = "longcat"
+    CATEGORY = "LongCat"
 
-    def encode(self, clip: Any, vae: Any, image1: torch.Tensor, prompt: str, image2: Optional[torch.Tensor] = None, image3: Optional[torch.Tensor] = None):
-        # Custom logic for edit encoding
-        # We need to access the internal tokenizer/encoder of the CLIP object if possible
-        # or use standard encoding and add image tokens?
+    def encode(self, clip, prompt, vae=None, image1=None, image2=None, image3=None):
+        device = comfy.model_management.get_torch_device()
+        pipeline = clip
+        pipeline.text_encoder.to(device)
         
-        # Placeholder for complex logic
-        return ([],)
-
-
-# --- VAE ---
-
-class VAEEncodeLongCat:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "vae": ("VAE",),
-                "image": ("IMAGE",),
-            }
-        }
-    
-    RETURN_TYPES = ("LATENT",)
-    FUNCTION = "encode"
-    CATEGORY = "longcat"
-    
-    def encode(self, vae: Any, image: torch.Tensor):
-        return (vae.encode(image[:,:,:,:3]),)
-
-
-class VAEDecodeLongCat:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "vae": ("VAE",),
-                "samples": ("LATENT",),
-            }
-        }
-    
-    RETURN_TYPES = ("IMAGE",)
-    FUNCTION = "decode"
-    CATEGORY = "longcat"
-    
-    def decode(self, vae: Any, samples: Dict):
-        return (vae.decode(samples["samples"]),)
-
-
-# --- Sampler ---
-
-class LongCatSampler:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model": ("MODEL",),
-                "positive": ("CONDITIONING",),
-                "negative": ("CONDITIONING",),
-                "latent_image": ("LATENT",),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                "steps": ("INT", {"default": 30, "min": 1, "max": 1000}),
-                "cfg": ("FLOAT", {"default": 4.5, "min": 0.0, "max": 100.0}),
-                "sampler_name": (comfy.samplers.KSampler.SAMPLERS,),
-                "scheduler": (comfy.samplers.KSampler.SCHEDULERS,),
-                "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
-            }
-        }
-
-    RETURN_TYPES = ("LATENT",)
-    FUNCTION = "sample"
-    CATEGORY = "longcat"
-
-    def sample(self, model: Any, positive: List, negative: List, latent_image: Dict, seed: int, steps: int, cfg: float, sampler_name: str, scheduler: str, denoise: float):
-        # Use ComfyUI's common_ksampler logic
-        # This handles the sampling loop using the provided sampler/scheduler
+        # Collect images
+        images = []
+        if image1 is not None: images.append(image1)
+        if image2 is not None: images.append(image2)
+        if image3 is not None: images.append(image3)
         
-        return comfy.samplers.common_ksampler(
-            model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=denoise
-        )
+        if len(images) > 0 and vae is None:
+            raise ValueError("VAE is required when images are provided.")
 
+        with torch.no_grad():
+            prompt_embeds, text_ids = pipeline.encode_prompt(
+                prompts=[prompt],
+                device=device,
+                dtype=pipeline.text_encoder.dtype,
+                image=None # We skip image for text encoding for now to avoid size mismatch issues
+            )
+            
+        conditioning = {
+            "prompt_embeds": prompt_embeds,
+            "text_ids": text_ids,
+            "images": images if len(images) > 0 else None,
+            "vae": vae
+        }
+        
+        return (conditioning,)
 
-class LongCatImageSizeScale:
+class LongCatSizePicker:
     @classmethod
-    def INPUT_TYPES(cls):
+    def INPUT_TYPES(s):
+        # Flatten the dictionaries to a list of strings "resolution (aspect_ratio)"
+        # or just use the keys/values.
+        # The user said "size: a list of avaliable size(from data_utils.py)"
+        
+        # Let's combine all sizes
+        sizes = []
+        for name, mapping in [("1024", MULTI_ASPECT_RATIO_1024), ("512", MULTI_ASPECT_RATIO_512), ("256", MULTI_ASPECT_RATIO_256)]:
+            for ratio, (h, w) in mapping.items():
+                sizes.append(f"{name} - {ratio} ({int(h)}x{int(w)})")
+        
+        return {
+            "required": {
+                "size": (sizes,),
+            }
+        }
+
+    RETURN_TYPES = ("LATENT", "INT", "INT")
+    RETURN_NAMES = ("latent", "width", "height")
+    FUNCTION = "pick_size"
+    CATEGORY = "LongCat"
+
+    def pick_size(self, size):
+        # Format: "1024 - 1.0 (1024x1024)"
+        try:
+            part = size.split("(")[1].split(")")[0]
+            h_str, w_str = part.split("x")
+            height = int(h_str)
+            width = int(w_str)
+        except:
+            height = 1024
+            width = 1024
+            
+        # Create empty latent
+        # Standard ComfyUI latent is [1, 4, H//8, W//8]
+        latent = torch.zeros([1, 4, height // 8, width // 8])
+        
+        return ({"samples": latent}, width, height)
+
+class LongCatImageResizer:
+    @classmethod
+    def INPUT_TYPES(s):
         return {
             "required": {
                 "image": ("IMAGE",),
-                "target_area": ("INT", {"default": 1024 * 1024, "min": 256 * 256, "max": 4096 * 4096}),
-                "upscale_method": (["nearest-exact", "bilinear", "area", "bicubic", "lanczos"],),
+                "method": (["keep proportion", "stretch", "fill/crop", "pad"],),
+                "interpolation": (["nearest", "bilinear", "bicubic", "lanczos"],),
             }
         }
 
     RETURN_TYPES = ("IMAGE", "INT", "INT")
     RETURN_NAMES = ("image", "width", "height")
-    FUNCTION = "scale"
-    CATEGORY = "longcat"
+    FUNCTION = "resize"
+    CATEGORY = "LongCat"
 
-    def scale(self, image: torch.Tensor, target_area: int, upscale_method: str):
-        if image.dim() == 3:
-            image = image.unsqueeze(0)
-        b, h, w, c = image.shape
-        ratio = w / float(h)
-        width = math.sqrt(target_area * ratio)
-        height = width / ratio
-        width = _round_to_multiple(int(round(width)), 16)
-        height = _round_to_multiple(int(round(height)), 16)
+    def resize(self, image, method, interpolation):
+        # image is [B, H, W, C]
+        pil_images = tensor2pil(image)
+        out_images = []
         
-        # Use ComfyUI's common_upscale
-        scaled = comfy.utils.common_upscale(image.permute(0, 3, 1, 2), width, height, upscale_method, "center")
-        scaled = scaled.permute(0, 2, 3, 1)
+        # Determine interpolation
+        interp_map = {
+            "nearest": Image.NEAREST,
+            "bilinear": Image.BILINEAR,
+            "bicubic": Image.BICUBIC,
+            "lanczos": Image.LANCZOS
+        }
+        interp = interp_map.get(interpolation, Image.BICUBIC)
         
-        return (scaled, int(width), int(height))
+        final_w, final_h = 0, 0
+        
+        for img in pil_images:
+            w, h = img.size
+            
+            # Find nearest supported resolution
+            all_sizes = []
+            for mapping in [MULTI_ASPECT_RATIO_1024, MULTI_ASPECT_RATIO_512, MULTI_ASPECT_RATIO_256]:
+                for _, (th, tw) in mapping.items():
+                    all_sizes.append((int(tw), int(th))) 
+            
+            # Find nearest size
+            best_size = None
+            min_dist = float('inf')
+            
+            for tw, th in all_sizes:
+                dist = (tw - w)**2 + (th - h)**2
+                if dist < min_dist:
+                    min_dist = dist
+                    best_size = (tw, th)
+            
+            target_w, target_h = best_size
+            final_w, final_h = target_w, target_h
+            
+            if method == "stretch":
+                resized = img.resize((target_w, target_h), interp)
+                out_images.append(resized)
+            elif method == "keep proportion":
+                # Find size with closest aspect ratio
+                best_ar_size = None
+                min_ar_diff = float('inf')
+                current_ar = w / h
+                
+                for tw, th in all_sizes:
+                    ar = tw / th
+                    diff = abs(ar - current_ar)
+                    if diff < min_ar_diff:
+                        min_ar_diff = diff
+                        best_ar_size = (tw, th)
+                
+                target_w, target_h = best_ar_size
+                final_w, final_h = target_w, target_h
+                
+                resized = img.resize((target_w, target_h), interp)
+                out_images.append(resized)
+                
+            elif method == "pad":
+                ratio = min(target_w/w, target_h/h)
+                new_w = int(w * ratio)
+                new_h = int(h * ratio)
+                resized = img.resize((new_w, new_h), interp)
+                
+                new_img = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+                new_img.paste(resized, ((target_w - new_w)//2, (target_h - new_h)//2))
+                out_images.append(new_img)
+                
+            elif method == "fill/crop":
+                ratio = max(target_w/w, target_h/h)
+                new_w = int(w * ratio)
+                new_h = int(h * ratio)
+                resized = img.resize((new_w, new_h), interp)
+                
+                left = (new_w - target_w)//2
+                top = (new_h - target_h)//2
+                cropped = resized.crop((left, top, left + target_w, top + target_h))
+                out_images.append(cropped)
+
+        return (pil2tensor(out_images), final_w, final_h)
+
+class LongCatSampler:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": ("LONGCAT_MODEL",),
+                "positive": ("LONGCAT_CONDITIONING",),
+                "negative": ("LONGCAT_CONDITIONING",),
+                "latent_image": ("LATENT",),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "steps": ("INT", {"default": 50, "min": 1, "max": 1000}),
+                "cfg": ("FLOAT", {"default": 4.5, "min": 0.0, "max": 20.0, "step": 0.1}),
+                "sampler_name": (comfy.samplers.KSampler.SAMPLERS, ),
+                "scheduler": (comfy.samplers.KSampler.SCHEDULERS, ),
+                "cfg_norm": ("BOOLEAN", {"default": True}),
+                "cfg_renorm_min": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "control_after_generate": (["fixed", "increment", "decrement", "random"], {"default": "fixed"}),
+            }
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    RETURN_NAMES = ("latent",)
+    FUNCTION = "sample"
+    CATEGORY = "LongCat"
+
+    def sample(self, model, positive, negative, latent_image, seed, steps, cfg, sampler_name, scheduler, cfg_norm, cfg_renorm_min, control_after_generate):
+        device = comfy.model_management.get_torch_device()
+        transformer = model
+        transformer.to(device)
+        
+        from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
+        
+        sched = FlowMatchEulerDiscreteScheduler(
+            num_train_timesteps=1000,
+            shift=3.0,
+            use_dynamic_shifting=True,
+            base_shift=0.5,
+            max_shift=1.15,
+            base_image_seq_len=256,
+            max_image_seq_len=4096,
+        )
+        
+        samples = latent_image["samples"]
+        batch_size, _, h, w = samples.shape
+        height = h * 8
+        width = w * 8
+        
+        generator = torch.Generator(device=device).manual_seed(seed)
+        
+        def _pack_latents(latents, batch_size, num_channels_latents, height, width):
+            latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
+            latents = latents.permute(0, 2, 4, 1, 3, 5)
+            latents = latents.reshape(batch_size, (height // 2) * (width // 2), num_channels_latents * 4)
+            return latents
+
+        def _unpack_latents(latents, height, width, vae_scale_factor):
+            batch_size, num_patches, channels = latents.shape
+            height = 2 * (int(height) // (vae_scale_factor * 2))
+            width = 2 * (int(width) // (vae_scale_factor * 2))
+            latents = latents.view(batch_size, height // 2, width // 2, channels // 4, 2, 2)
+            latents = latents.permute(0, 3, 1, 4, 2, 5)
+            latents = latents.reshape(batch_size, channels // (2 * 2), height, width)
+            return latents
+
+        num_channels_latents = 16
+        vae_scale_factor = 8
+        pixel_step = vae_scale_factor * 2
+        height = int(height / pixel_step) * pixel_step
+        width = int(width / pixel_step) * pixel_step
+        
+        latents = torch.randn((batch_size, num_channels_latents, height, width), generator=generator, device=device, dtype=transformer.dtype)
+        latents = _pack_latents(latents, batch_size, num_channels_latents, height, width)
+        
+        latent_image_ids = prepare_pos_ids(modality_id=1,
+                                               type='image',
+                                               start=(512, 512),
+                                               height=height//2,
+                                               width=width//2).to(device, dtype=torch.float64)
+
+        prompt_embeds = positive["prompt_embeds"].to(device, dtype=transformer.dtype)
+        text_ids = positive["text_ids"].to(device, dtype=torch.float64)
+        
+        neg_prompt_embeds = negative["prompt_embeds"].to(device, dtype=transformer.dtype)
+        
+        image_latents = None
+        image_latents_ids = None
+        
+        if "images" in positive and positive["images"] is not None:
+            images = positive["images"]
+            vae = positive["vae"]
+            
+            from diffusers.image_processor import VaeImageProcessor
+            image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor * 2)
+            
+            pil_imgs = tensor2pil(images[0])
+            
+            processed_imgs = image_processor.resize(pil_imgs, height, width)
+            processed_imgs = image_processor.preprocess(processed_imgs, height, width).to(device=device, dtype=vae.dtype)
+            
+            with torch.no_grad():
+                encoded = vae.encode(processed_imgs).latent_dist.mode()
+                encoded = (encoded - vae.config.shift_factor) * vae.config.scaling_factor
+                encoded = encoded.to(dtype=transformer.dtype)
+                
+                image_latents = _pack_latents(encoded, encoded.shape[0], num_channels_latents, height, width)
+                
+                image_latents_ids = prepare_pos_ids(modality_id=2,
+                                           type='image',
+                                           start=(prompt_embeds.shape[1], prompt_embeds.shape[1]),
+                                           height=height//2,
+                                           width=width//2).to(device, dtype=torch.float64)
+        
+        if cfg > 1.0:
+            prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds], dim=0)
+        
+        if image_latents is not None:
+            latent_image_ids = torch.cat([latent_image_ids, image_latents_ids], dim=0)
+
+        sigmas = np.linspace(1.0, 1.0 / steps, steps)
+        image_seq_len = latents.shape[1]
+        mu = calculate_shift(
+            image_seq_len,
+            256,
+            4096,
+            0.5,
+            1.15,
+        )
+        timesteps, num_inference_steps = retrieve_timesteps(
+            sched,
+            steps,
+            device,
+            sigmas=sigmas,
+            mu=mu,
+        )
+        
+        with torch.inference_mode():
+            for i, t in enumerate(timesteps):
+                latent_model_input = latents
+                if image_latents is not None:
+                    latent_model_input = torch.cat([latents, image_latents], dim=1)
+
+                latent_model_input = torch.cat([latent_model_input] * 2) if cfg > 1.0 else latent_model_input
+                
+                timestep = t.expand(latent_model_input.shape[0]).to(latents.dtype)
+                
+                noise_pred = transformer(
+                    hidden_states=latent_model_input,
+                    timestep=timestep / 1000,
+                    guidance=None,
+                    encoder_hidden_states=prompt_embeds,
+                    txt_ids=text_ids,
+                    img_ids=latent_image_ids,
+                    return_dict=False,
+                )[0]
+                
+                if image_latents is not None:
+                    noise_pred = noise_pred[:, :image_seq_len]
+
+                if cfg > 1.0:
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2, dim=0)
+                    noise_pred = noise_pred_uncond + cfg * (noise_pred_text - noise_pred_uncond)
+                    
+                    if cfg_norm:
+                        cond_norm = torch.norm(noise_pred_text, dim=-1, keepdim=True)
+                        noise_norm = torch.norm(noise_pred, dim=-1, keepdim=True)
+                        scale = (cond_norm / (noise_norm + 1e-8)).clamp(min=cfg_renorm_min, max=1.0)
+                        noise_pred = noise_pred * scale
+
+                latents = sched.step(noise_pred, t, latents, return_dict=False)[0]
+
+        unpacked = _unpack_latents(latents, height, width, vae_scale_factor)
+        
+        return ({"samples": unpacked},)
+
+NODE_CLASS_MAPPINGS = {
+    "LongCatPipelineLoader": LongCatPipelineLoader,
+    "TextEncodeLongCatImage": TextEncodeLongCatImage,
+    "TextEncodeLongCatImageEdit": TextEncodeLongCatImageEdit,
+    "LongCatSizePicker": LongCatSizePicker,
+    "LongCatImageResizer": LongCatImageResizer,
+    "LongCatSampler": LongCatSampler,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "LongCatPipelineLoader": "LongCat Pipeline Loader",
+    "TextEncodeLongCatImage": "Text Encode LongCat Image",
+    "TextEncodeLongCatImageEdit": "Text Encode LongCat Image Edit",
+    "LongCatSizePicker": "LongCat Size Picker",
+    "LongCatImageResizer": "LongCat Image Resizer",
+    "LongCatSampler": "LongCat Sampler",
+}
