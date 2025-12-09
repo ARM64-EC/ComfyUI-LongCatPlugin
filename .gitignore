@@ -124,6 +124,17 @@ server.log
 # Distribution of plugin
 dist_upload/
 
+# Explicitly ignore built egg-info metadata
+comfyui_longcat.egg-info/
+
+# Pytest cache and artifacts
+.pytest_cache/
+
+# Explicit compiled python and cache files
+*.pyc
+__pycache__/
+*/__pycache__/
+
 # Other common
 *.swp
 *~
